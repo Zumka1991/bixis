@@ -37,7 +37,7 @@ X11 не поддерживается и не планируется.
 **Ubuntu / Debian**
 
 ```bash
-sudo apt install build-essential pkgconf libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libfreetype-dev libfontconfig-dev libwlroots-0.19-dev
+sudo apt install build-essential pkgconf libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libfreetype-dev libfontconfig-dev libwlroots-0.19-dev grim
 ```
 
 На старых Debian/Ubuntu пакет `libfreetype-dev` называется `libfreetype6-dev`.
@@ -45,13 +45,13 @@ sudo apt install build-essential pkgconf libwayland-dev libwayland-bin wayland-p
 **Arch Linux**
 
 ```bash
-sudo pacman -S --needed base-devel wayland wayland-protocols libxkbcommon freetype2 fontconfig wlroots0.19
+sudo pacman -S --needed base-devel wayland wayland-protocols libxkbcommon freetype2 fontconfig wlroots0.19 grim
 ```
 
 **Fedora**
 
 ```bash
-sudo dnf install gcc make pkgconf-pkg-config wayland-devel wayland-protocols-devel libxkbcommon-devel freetype-devel fontconfig-devel wlroots-devel
+sudo dnf install gcc make pkgconf-pkg-config wayland-devel wayland-protocols-devel libxkbcommon-devel freetype-devel fontconfig-devel wlroots-devel grim
 ```
 
 В Fedora проверь, что `wlroots-devel` версии 0.19: `pkg-config --modversion wlroots-0.19`.
@@ -134,6 +134,8 @@ bixis-term --version
 | `Ctrl+1` … `Ctrl+9` (и `Ctrl+Shift+1` … `Ctrl+Shift+9`) | Перейти к вкладке по номеру |
 
 Полоска вкладок появляется только при двух и более вкладках. По вкладке можно кликнуть.
+В Bash команда `/set_title Название` закрепляет имя текущей вкладки;
+`/set_title` без аргументов возвращает автоматический заголовок.
 
 ### Буфер обмена
 
@@ -141,6 +143,10 @@ bixis-term --version
 |---|---|
 | `Ctrl+Shift+C` | Скопировать выделение |
 | `Ctrl+Shift+V`, `Shift+Insert` | Вставить |
+| `Shift` + стрелки | Выделить текст на основном экране от курсора |
+
+В полноэкранных приложениях `Shift` со стрелками передаётся приложению.
+Приложения также могут копировать текст в буфер через OSC 52.
 
 ### Прокрутка
 
@@ -148,7 +154,7 @@ bixis-term --version
 |---|---|
 | `Shift+PgUp` / `Shift+PgDn` | На страницу вверх / вниз |
 | `Shift+Home` / `Shift+End` | В начало / в конец скроллбэка |
-| Колесо мыши | По 3 строки |
+| Колесо мыши | По 6 строк истории |
 
 Любая клавиша, которая посылает текст, возвращает вид в самый низ.
 Если программа запросила события мыши (например, OpenCode), колесо передаётся ей
@@ -163,6 +169,9 @@ bixis-term --version
 |---|---|
 | `Ctrl+=` / `Ctrl+-` | Крупнее / мельче |
 | `Ctrl+0` | Размер по умолчанию |
+
+В Bixis клавиша `Print Screen` сохраняет снимок экрана в `~/Pictures`.
+Для этого нужна программа `grim`.
 
 ## 6. Мышь и буфер обмена
 

@@ -85,7 +85,7 @@ int main(void)
 	fputs("[bindings]\nXF86AudioMute = volume_down\n", f);
 	fclose(f);
 	CHECK(config_load(&server.cfg, config_path));
-	CHECK(server.cfg.nbinds == 3);
+	CHECK(server.cfg.nbinds == 4);
 	CHECK(server.cfg.binds[0].act == ACT_VOLUME_DOWN);
 	config_free(&server.cfg);
 	CHECK(config_load(&server.cfg, NULL));

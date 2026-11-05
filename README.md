@@ -31,7 +31,7 @@
 Ubuntu / Debian:
 
 ```bash
-sudo apt install build-essential pkgconf libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libfreetype-dev libfontconfig-dev libwlroots-0.19-dev
+sudo apt install build-essential pkgconf libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libfreetype-dev libfontconfig-dev libwlroots-0.19-dev grim
 ```
 
 ```bash
@@ -52,10 +52,13 @@ bixis-term
 ```
 
 Клавиши `bixis`: `Super+1…4` — слоты, `Super+Q` — закрыть окно, `Super+Shift+R` — перечитать
-конфиг, `Super+Shift+E` — выход.
+конфиг, `Super+Shift+E` — выход, `Print Screen` — снимок в `~/Pictures` (нужен `grim`).
 Клавиши `bixis-term`: `Ctrl+Shift+T` — новая вкладка, `Ctrl+Tab` — следующая,
 `Ctrl+1…9` — перейти к вкладке по номеру, `Ctrl+Shift+C` / `Ctrl+Shift+V` — копировать / вставить,
-`Shift+PgUp` — история.
+`Shift+PgUp` — история. На основном экране `Shift` со стрелками выделяет текст;
+в полноэкранных приложениях клавиши передаются самому приложению.
+В Bash команда `/set_title Название` задаёт имя текущей вкладки;
+`/set_title` без аргументов возвращает автоматический заголовок.
 
 ## Документация
 

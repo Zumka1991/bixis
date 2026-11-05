@@ -59,6 +59,25 @@ int main(void)
 	if (!app.xkb || !app.keymap || !app.xkb_state)
 		return 1;
 
+	/* Shift-arrows select on the primary screen, but reach full-screen apps. */
+	t.alt_active = false;
+	t.cx = 5; t.cy = 2;
+	shift(true);
+	key_press(KEY_LEFT, true);
+	CHECK(t.sel_active && t.sel_a_col == 4 && t.sel_b_col == 4);
+	key_press(KEY_LEFT, false);
+	CHECK(t.sel_a_col == 3 && t.sel_b_col == 4);
+	key_press(KEY_RIGHT, false);
+	CHECK(t.sel_a_col == 4 && t.sel_b_col == 4);
+	key_press(KEY_RIGHT, false);
+	CHECK(!t.sel_active);
+	expect("");
+	t.alt_active = true;
+	key_press(KEY_LEFT, true);
+	expect("\033[1;2D");
+	shift(false);
+	t.key_selecting = false;
+
 	/* One physical wheel notch = one report, never arrows or duplicate axis events. */
 	wheel(-1);
 	expect("\033[<64;11;5M");

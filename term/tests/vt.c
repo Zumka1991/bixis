@@ -3,6 +3,7 @@
 #include "util.h"
 
 #include <locale.h>
+#include <poll.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -238,8 +239,48 @@ static void test_osc_title(void)
 	struct term *t = mk(10, 2);
 	feed(t, "\033]0;my title\007x\033]2;second\033\\y");
 	CHECK(!strcmp(t->title, "second"));
+	feed(t, "\033]777;custom title\007\033]2;ignored\007");
+	CHECK(!strcmp(t->title, "custom title"));
+	feed(t, "\033]777;\007\033]2;unlocked\007");
+	CHECK(!strcmp(t->title, "unlocked"));
 	CHECK_ROW(t, 0, "xy");
 	term_free(t);
+}
+
+static char copied[128];
+static void capture_clipboard(const char *s)
+{
+	snprintf(copied, sizeof copied, "%s", s);
+}
+
+static void test_osc_clipboard(void)
+{
+	struct term *t = mk(10, 2);
+	t->clipboard_set = capture_clipboard;
+	feed(t, "\033]52;c;0J/RgNC40LLQtdGC\007");
+	CHECK(!strcmp(copied, "Привет"));
+	feed(t, "\033]52;c;?\007");
+	CHECK(!strcmp(copied, "Привет"));
+	term_free(t);
+}
+
+static void test_bash_title_command(void)
+{
+	setenv("SHELL", "/bin/bash", 1);
+	char *home = getenv("HOME") ? strdup(getenv("HOME")) : NULL;
+	setenv("HOME", "/nonexistent", 1);
+	struct term *t = mk(80, 24);
+	const char *command = "/set_title My terminal\n";
+	term_write(t, command, strlen(command));
+	for (int i = 0; i < 30 && strcmp(t->title, "My terminal"); i++) {
+		struct pollfd fd = { .fd = t->fd, .events = POLLIN };
+		if (poll(&fd, 1, 100) > 0)
+			term_read(t);
+	}
+	CHECK(!strcmp(t->title, "My terminal"));
+	term_free(t);
+	setenv("SHELL", "/bin/cat", 1);
+	if (home) { setenv("HOME", home, 1); free(home); } else unsetenv("HOME");
 }
 
 int main(void)
@@ -263,6 +304,8 @@ int main(void)
 	test_resize();
 	test_selection();
 	test_osc_title();
+	test_osc_clipboard();
+	test_bash_title_command();
 
 	if (fails) {
 		fprintf(stderr, "%d check(s) failed\n", fails);

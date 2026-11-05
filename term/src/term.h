@@ -48,7 +48,7 @@ struct saved_cursor {
 };
 
 #define TERM_MAX_PARAMS 16
-#define TERM_OSC_MAX    512
+#define TERM_OSC_MAX    65536
 
 struct term {
 	int cols, rows;
@@ -85,6 +85,7 @@ struct term {
 	bool str_esc;
 	char osc[TERM_OSC_MAX];
 	int osc_len;
+	void (*clipboard_set)(const char *text);
 	uint32_t utf8_cp;
 	int utf8_need;
 
@@ -98,6 +99,8 @@ struct term {
 	bool sel_active;
 	int64_t sel_a_line, sel_b_line;
 	int sel_a_col, sel_b_col;
+	bool key_selecting;
+	int64_t key_anchor, key_end; /* cell boundaries on the live screen */
 
 	/* pty */
 	int fd;
@@ -108,6 +111,7 @@ struct term {
 
 	char title[128];
 	bool title_changed;
+	bool title_locked;
 };
 
 /* Palette shared by all terminals: 0-15 from config, 16-255 computed. */

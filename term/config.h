@@ -6,7 +6,7 @@
 
 #define PADDING       6      /* pixels around the text grid */
 #define SCROLLBACK    5000   /* lines per tab */
-#define WHEEL_LINES   3      /* lines per mouse wheel notch */
+#define WHEEL_LINES   6      /* lines per mouse wheel notch */
 #define DEFAULT_COLS  100    /* initial size when the compositor doesn't choose */
 #define DEFAULT_ROWS  30
 #define MAX_TABS      32

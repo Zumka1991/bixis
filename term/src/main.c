@@ -204,12 +204,15 @@ static void update_title(void)
 	cur()->title_changed = false;
 }
 
+static void clipboard_set(const char *text);
+
 static void tab_new(void)
 {
 	if (app.ntabs >= MAX_TABS)
 		return;
 	grid_size(app.ntabs + 1);
 	struct term *t = term_new(app.cols, app.rows, app.font->cw, app.font->ch);
+	t->clipboard_set = clipboard_set;
 
 	int at = app.ntabs ? app.cur + 1 : 0;
 	memmove(&app.tabs[at + 1], &app.tabs[at], (app.ntabs - at) * sizeof *app.tabs);
@@ -600,18 +603,13 @@ static const struct wl_data_source_listener src_listener = {
 	.action = src_action,
 };
 
-static void copy(void)
+static void clipboard_set(const char *text)
 {
-	char *text = term_selection_text(cur());
-	if (!text || !*text || !app.ddev) {
-		free(text);
-		return;
-	}
-	if (app.source)
-		wl_data_source_destroy(app.source);
+	if (!app.ddev || !text) return;
+	if (app.source) wl_data_source_destroy(app.source);
 	clipboard_unref(app.copy);
 	app.copy = xcalloc(1, sizeof *app.copy);
-	app.copy->text = text;
+	app.copy->text = strdup(text);
 	app.copy->len = strlen(text);
 	app.copy->refs = 1;
 	app.source = wl_data_device_manager_create_data_source(app.ddm);
@@ -619,6 +617,13 @@ static void copy(void)
 	for (size_t i = 0; i < LEN(text_mimes); i++)
 		wl_data_source_offer(app.source, text_mimes[i]);
 	wl_data_device_set_selection(app.ddev, app.source, app.serial);
+}
+
+static void copy(void)
+{
+	char *text = term_selection_text(cur());
+	if (text && *text) clipboard_set(text);
+	free(text);
 }
 
 static void paste(void)
@@ -839,6 +844,32 @@ static bool key_press(uint32_t key, bool allow_bindings)
 {
 	xkb_keycode_t kc = key + 8;
 	unsigned m = mods();
+	struct term *t = cur();
+	xkb_keysym_t sym = xkb_state_key_get_one_sym(app.xkb_state, kc);
+	if (m == SHIFT && !t->alt_active &&
+	    (sym == XKB_KEY_Left || sym == XKB_KEY_Right ||
+	     sym == XKB_KEY_Up || sym == XKB_KEY_Down)) {
+		if (!t->key_selecting) {
+			t->key_anchor = t->key_end = (int64_t)t->cy * t->cols + t->cx;
+			t->key_selecting = true;
+		}
+		int delta = sym == XKB_KEY_Left ? -1 : sym == XKB_KEY_Right ? 1 :
+		            sym == XKB_KEY_Up ? -t->cols : t->cols;
+		t->key_end = CLAMP(t->key_end + delta, 0, (int64_t)t->rows * t->cols);
+		int64_t first = MIN(t->key_anchor, t->key_end);
+		int64_t last = MAX(t->key_anchor, t->key_end);
+		t->sel_active = first != last;
+		if (t->sel_active) {
+			last--;
+			t->sel_a_line = (int64_t)t->pushed + first / t->cols;
+			t->sel_a_col = first % t->cols;
+			t->sel_b_line = (int64_t)t->pushed + last / t->cols;
+			t->sel_b_col = last % t->cols;
+		}
+		t->view = 0;
+		app.dirty = true;
+		return false; /* allow keyboard repeat */
+	}
 
 	if (allow_bindings) {
 		xkb_keysym_t base = base_sym(kc);
@@ -848,7 +879,7 @@ static bool key_press(uint32_t key, bool allow_bindings)
 	}
 
 	char buf[64];
-	struct term *t = cur();
+	t->key_selecting = false;
 	int n = encode_key(t, kc, m, buf, sizeof buf);
 	if (n > 0) {
 		if (t->view) {
@@ -1009,7 +1040,7 @@ static void scroll_lines(int n, bool discrete)
 		return;
 	}
 	if (discrete)
-		n *= WHEEL_LINES;
+		n *= t->alt_active && !(mods() & SHIFT) ? 3 : WHEEL_LINES;
 	if (t->alt_active && !(mods() & SHIFT)) {
 		/* less, man, vim without mouse mode: wheel = arrows */
 		const char *seq = n < 0 ? (t->app_cursor ? "\033OA" : "\033[A")
@@ -1114,6 +1145,7 @@ static void ptr_button(void *data, struct wl_pointer *p, uint32_t serial, uint32
 			return;
 		}
 		struct term *t = cur();
+		t->key_selecting = false;
 		if (t->sel_active)
 			app.dirty = true;
 		t->sel_active = false;

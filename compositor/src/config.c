@@ -321,6 +321,16 @@ bool config_load(struct config *c, const char *path)
 			c->binds[c->nbinds++] = media[i];
 		}
 	}
+	/* Add Print for existing configurations unless explicitly rebound. */
+	bool has_print = false;
+	for (int i = 0; i < c->nbinds; i++)
+		if (!c->binds[i].mods && c->binds[i].sym == XKB_KEY_Print)
+			has_print = true;
+	if (!has_print) {
+		c->binds = realloc(c->binds, (c->nbinds + 1) * sizeof *c->binds);
+		c->binds[c->nbinds++] = (struct bind){ .sym = XKB_KEY_Print, .act = ACT_SPAWN,
+			.arg = strdup("sh -c 'mkdir -p \"$HOME/Pictures\" && grim \"$HOME/Pictures/Screenshot-$(date +%Y%m%d-%H%M%S).png\"'") };
+	}
 	return true;
 }
 

@@ -8,6 +8,7 @@
 #include <pwd.h>
 #include <signal.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <wchar.h>
@@ -382,6 +383,7 @@ static void switch_screen(struct term *t, bool alt)
 	t->screen = alt ? t->alt : t->pri;
 	t->view = 0;
 	t->sel_active = false;
+	t->key_selecting = false;
 }
 
 static void clear_screen(struct term *t)
@@ -928,7 +930,29 @@ static void osc_dispatch(struct term *t)
 	*arg++ = 0;
 	int cmd = atoi(t->osc);
 
-	if (cmd == 0 || cmd == 2) {
+	if (cmd == 52 && t->clipboard_set) {
+		char *encoded = strchr(arg, ';');
+		if (!encoded || t->osc_len >= TERM_OSC_MAX - 1) return;
+		encoded++;
+		if (!strcmp(encoded, "?")) return;
+		const char *alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+		char *out = xmalloc(strlen(encoded) * 3 / 4 + 2);
+		size_t n = 0; unsigned acc = 0, bits = 0;
+		for (const char *p = encoded; *p && *p != '='; p++) {
+			const char *q = strchr(alphabet, *p);
+			if (!q) { free(out); return; }
+			acc = (acc << 6) | (unsigned)(q - alphabet);
+			bits += 6;
+			if (bits >= 8) { bits -= 8; out[n++] = (char)(acc >> bits); }
+		}
+		out[n] = 0;
+		if (!memchr(out, 0, n)) t->clipboard_set(out);
+		free(out);
+	} else if (cmd == 0 || cmd == 2 || cmd == 777) {
+		if (cmd != 777 && t->title_locked)
+			return;
+		if (cmd == 777)
+			t->title_locked = *arg != '\0';
 		size_t n = MIN(strlen(arg), sizeof t->title - 1);
 		while (n && n < strlen(arg) && ((uint8_t)arg[n] & 0xc0) == 0x80)
 			n--; /* don't cut a UTF-8 sequence */
@@ -1163,6 +1187,24 @@ static void spawn(struct term *t, struct winsize *ws)
 			struct passwd *pw = getpwuid(getuid());
 			sh = pw && pw->pw_shell && *pw->pw_shell ? pw->pw_shell : "/bin/sh";
 		}
+		/* Bash accepts slash-named functions, so this needs no root-level file. */
+		const char *name = strrchr(sh, '/');
+		name = name ? name + 1 : sh;
+		if (!strcmp(name, "bash")) {
+			int rc = memfd_create("bixis-bashrc", 0);
+			if (rc >= 0) {
+				char script[1024], path[64];
+				int n = snprintf(script, sizeof script,
+				    "[ ! -r \"$HOME/.bashrc\" ] || . \"$HOME/.bashrc\"\n"
+				    "function /set_title { printf '\\033]777;%%s\\007' \"$*\"; }\n"
+				    "exec %d<&-\n", rc);
+				if (write(rc, script, n) == n && lseek(rc, 0, SEEK_SET) == 0) {
+					snprintf(path, sizeof path, "/proc/self/fd/%d", rc);
+					execl(sh, sh, "--rcfile", path, "-i", (char *)NULL);
+				}
+				close(rc);
+			}
+		}
 		execl(sh, sh, (char *)NULL);
 		_exit(127);
 	}
@@ -1276,6 +1318,7 @@ void term_resize(struct term *t, int cols, int rows, int pw, int ph)
 		t->wrapnext = false;
 		t->view = MIN(t->view, t->sb_len);
 		t->sel_active = false;
+		t->key_selecting = false;
 	}
 
 	if (t->fd >= 0) {
