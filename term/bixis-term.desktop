@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Bixis Terminal
+Comment=Minimal Wayland terminal with tabs
+Exec=bixis-term
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;
