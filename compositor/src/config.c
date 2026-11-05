@@ -182,6 +182,12 @@ static void parse(struct config *c, char *text, const char *src)
 					c->mod = m;
 			} else if (!strcasecmp(key, "start")) {
 				set_str(&c->start, val);
+			} else if (!strcasecmp(key, "autostart")) {
+				if (*val) {
+					c->autostart = realloc(c->autostart,
+					                       (c->nautostart + 1) * sizeof *c->autostart);
+					c->autostart[c->nautostart++] = strdup(val);
+				}
 			} else {
 				WARN("unknown key '%s'", key);
 			}
@@ -301,6 +307,9 @@ bool config_load(struct config *c, const char *path)
 void config_free(struct config *c)
 {
 	free(c->start);
+	for (int i = 0; i < c->nautostart; i++)
+		free(c->autostart[i]);
+	free(c->autostart);
 	free(c->kb_layout);
 	free(c->kb_variant);
 	free(c->kb_options);

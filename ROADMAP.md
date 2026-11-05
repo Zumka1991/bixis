@@ -83,6 +83,7 @@ Bixis — минималистичная Wayland-оболочка: собств�
 - [x] Диалоги по центру поверх своего слота, popup'ы не вылезают за экран
 - [x] Конфиг `~/.config/bixis/config` (INI): модификатор, раскладки xkb, автоповтор, масштаб, фон, слоты, бинды
 - [x] 4K: автоматический масштаб 200%, максимальная частота родного режима, `mode = 3840x2160@60`
+- [x] `autostart`: агент polkit, окружение для systemd/D-Bus; плавающие окна фиксированного размера
 - [x] Перечитывание конфига: `mod+shift+r` и `SIGHUP`
 - [x] Буфер обмена и primary selection, `viewporter`, `presentation-time`, `fractional-scale`,
       `single-pixel-buffer`, `cursor-shape`, `xdg-output`, `screencopy`, `virtual-keyboard`

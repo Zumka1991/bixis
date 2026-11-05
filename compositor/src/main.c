@@ -121,6 +121,7 @@ struct view {
 	struct wlr_xdg_toplevel_decoration_v1 *deco;
 	int slot;
 	bool mapped;
+	bool floating;  /* dialogs and fixed-size windows: natural size, centered */
 	struct wl_listener map, unmap, commit, destroy;
 	struct wl_listener request_fullscreen, request_maximize;
 	struct wl_listener deco_mode, deco_destroy;
@@ -252,7 +253,7 @@ static void size_view(struct view *v)
 {
 	if (!v->xdg->base->initialized)
 		return;
-	if (v->xdg->parent) {
+	if (v->floating) {
 		center_view(v);
 		return;
 	}
@@ -396,6 +397,10 @@ static int view_pick_slot(struct view *v)
 	for (size_t i = 0; i < sizeof s->spawned / sizeof *s->spawned; i++)
 		if (s->spawned[i].pid > 0 && s->spawned[i].pid == pid)
 			return s->spawned[i].slot;
+
+	/* a password prompt or similar pops up where the user is looking */
+	if (v->floating)
+		return s->active;
 
 	const char *app_id = v->xdg->app_id;
 	for (int i = 0; i < s->nslots; i++) {
@@ -818,6 +823,9 @@ static void layout_change(struct wl_listener *l, void *data)
 
 /* ---- xdg toplevels ---- */
 
+static bool wants_float(struct wlr_xdg_toplevel *t);
+static void view_set_floating(struct view *v);
+
 static void view_map(struct wl_listener *l, void *data)
 {
 	(void)data;
@@ -825,11 +833,14 @@ static void view_map(struct wl_listener *l, void *data)
 	struct server *s = v->server;
 
 	v->mapped = true;
+	if (!v->floating && wants_float(v->xdg))
+		view_set_floating(v);
 	v->slot = view_pick_slot(v);
 	struct slot *sl = &s->slots[v->slot];
-	wlr_log(WLR_INFO, "window app_id=%s title=%s -> slot %s",
+	wlr_log(WLR_INFO, "window app_id=%s title=%s -> slot %s%s",
 	        v->xdg->app_id ? v->xdg->app_id : "(none)",
-	        v->xdg->title ? v->xdg->title : "(none)", sl->name);
+	        v->xdg->title ? v->xdg->title : "(none)", sl->name,
+	        v->floating ? " (floating)" : "");
 	sl->launching = false;
 	wlr_scene_node_reparent(&v->tree->node, sl->tree);
 	wl_list_insert(&sl->views, &v->slot_link);
@@ -852,13 +863,32 @@ static void view_unmap(struct wl_listener *l, void *data)
 		focus_slot_top(s);
 }
 
+/* Windows that can't be resized (min == max size) are dialogs: don't stretch them. */
+static bool wants_float(struct wlr_xdg_toplevel *t)
+{
+	const struct wlr_xdg_toplevel_state *st = &t->current;
+	return t->parent || (st->min_width > 0 && st->min_height > 0 &&
+	                     st->min_width == st->max_width && st->min_height == st->max_height);
+}
+
+/* GTK announces min/max size after the first commit: un-maximize late dialogs. */
+static void view_set_floating(struct view *v)
+{
+	v->floating = true;
+	wlr_xdg_toplevel_set_maximized(v->xdg, false);
+	if (wl_resource_get_version(v->xdg->resource) >= XDG_TOPLEVEL_STATE_TILED_LEFT_SINCE_VERSION)
+		wlr_xdg_toplevel_set_tiled(v->xdg, 0);
+	wlr_xdg_toplevel_set_size(v->xdg, 0, 0);
+}
+
 static void view_commit(struct wl_listener *l, void *data)
 {
 	(void)data;
 	struct view *v = wl_container_of(l, v, commit);
 
 	if (v->xdg->base->initial_commit) {
-		if (v->xdg->parent) {
+		v->floating = wants_float(v->xdg);
+		if (v->floating) {
 			wlr_xdg_toplevel_set_size(v->xdg, 0, 0);
 		} else {
 			struct wlr_box box = main_box(v->server);
@@ -873,7 +903,9 @@ static void view_commit(struct wl_listener *l, void *data)
 				WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
 		return;
 	}
-	if (v->mapped && v->xdg->parent)
+	if (!v->floating && wants_float(v->xdg))
+		view_set_floating(v);
+	if (v->mapped && v->floating)
 		center_view(v);
 }
 
@@ -1231,6 +1263,9 @@ int main(int argc, char **argv)
 	setenv("ELECTRON_OZONE_PLATFORM_HINT", "wayland", true);
 	setenv("GDK_BACKEND", "wayland", true);
 	fprintf(stderr, "bixis: running on WAYLAND_DISPLAY=%s\n", socket);
+
+	for (int i = 0; i < s->cfg.nautostart; i++)
+		spawn(s->cfg.autostart[i]);
 
 	wlr_cursor_set_xcursor(s->cursor, s->xcursor, "default");
 	int start = s->cfg.start ? slot_find(s, s->cfg.start) : -1;

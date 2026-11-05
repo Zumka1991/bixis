@@ -32,6 +32,8 @@ struct bind {
 struct config {
 	uint32_t mod;
 	char *start;         /* slot shown at startup */
+	char **autostart;    /* background commands run once at startup */
+	int nautostart;
 
 	char *kb_layout, *kb_variant, *kb_options;
 	int repeat_rate, repeat_delay;
