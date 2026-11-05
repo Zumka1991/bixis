@@ -85,6 +85,8 @@ struct server {
 
 	struct slot slots[MAX_SLOTS];
 	int nslots, active;
+	struct { pid_t pid; int slot; } spawned[16]; /* `spawn` launches, a ring */
+	int spawned_next;
 
 	struct config cfg;
 	const char *config_path;
@@ -385,18 +387,22 @@ static int view_pick_slot(struct view *v)
 	if (parent && parent->mapped)
 		return parent->slot;
 
+	/* whoever launched the process owns its windows, even if another slot has its app_id */
+	pid_t pid = 0;
+	wl_client_get_credentials(wl_resource_get_client(v->xdg->resource), &pid, NULL, NULL);
+	for (int i = 0; i < s->nslots; i++)
+		if (s->slots[i].pid > 0 && s->slots[i].pid == pid)
+			return i;
+	for (size_t i = 0; i < sizeof s->spawned / sizeof *s->spawned; i++)
+		if (s->spawned[i].pid > 0 && s->spawned[i].pid == pid)
+			return s->spawned[i].slot;
+
 	const char *app_id = v->xdg->app_id;
 	for (int i = 0; i < s->nslots; i++) {
 		const struct slot_cfg *c = slot_cfg(s, i);
 		if (app_id && c && c->app_id && !strcasecmp(app_id, c->app_id))
 			return i;
 	}
-
-	pid_t pid = 0;
-	wl_client_get_credentials(wl_resource_get_client(v->xdg->resource), &pid, NULL, NULL);
-	for (int i = 0; i < s->nslots; i++)
-		if (s->slots[i].pid > 0 && s->slots[i].pid == pid)
-			return i;
 
 	/* wrappers (snap, flatpak) fork: the window comes from another pid */
 	if (s->slots[s->active].launching)
@@ -426,9 +432,15 @@ static void run_action(struct server *s, const struct bind *b)
 	case ACT_SLOT:
 		slot_activate(s, b->arg);
 		break;
-	case ACT_SPAWN:
-		spawn(b->arg);
+	case ACT_SPAWN: {
+		pid_t pid = spawn(b->arg);
+		if (pid > 0) {
+			int i = s->spawned_next++ % (int)(sizeof s->spawned / sizeof *s->spawned);
+			s->spawned[i].pid = pid;
+			s->spawned[i].slot = s->active;
+		}
 		break;
+	}
 	case ACT_CLOSE:
 		if ((v = focused_view(s)))
 			wlr_xdg_toplevel_send_close(v->xdg);
@@ -1056,10 +1068,14 @@ static int on_sigchld(int sig, void *data)
 	(void)sig;
 	struct server *s = data;
 	pid_t pid;
-	while ((pid = waitpid(-1, NULL, WNOHANG)) > 0)
+	while ((pid = waitpid(-1, NULL, WNOHANG)) > 0) {
 		for (int i = 0; i < s->nslots; i++)
 			if (s->slots[i].pid == pid)
 				s->slots[i].pid = 0;
+		for (size_t i = 0; i < sizeof s->spawned / sizeof *s->spawned; i++)
+			if (s->spawned[i].pid == pid)
+				s->spawned[i].pid = 0;
+	}
 	return 0;
 }
 
