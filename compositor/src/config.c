@@ -329,7 +329,7 @@ bool config_load(struct config *c, const char *path)
 	if (!has_print) {
 		c->binds = realloc(c->binds, (c->nbinds + 1) * sizeof *c->binds);
 		c->binds[c->nbinds++] = (struct bind){ .sym = XKB_KEY_Print, .act = ACT_SPAWN,
-			.arg = strdup("sh -c 'mkdir -p \"$HOME/Pictures\" && grim \"$HOME/Pictures/Screenshot-$(date +%Y%m%d-%H%M%S).png\"'") };
+			.arg = strdup("sh -c 'mkdir -p \"$HOME/Pictures\" && f=\"$HOME/Pictures/Screenshot-$(date +%Y%m%d-%H%M%S).png\" && grim \"$f\" && { command -v wl-copy >/dev/null && wl-copy -t image/png < \"$f\"; true; }'") };
 	}
 	return true;
 }

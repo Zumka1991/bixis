@@ -37,7 +37,7 @@ X11 не поддерживается и не планируется.
 **Ubuntu / Debian**
 
 ```bash
-sudo apt install build-essential pkgconf libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libfreetype-dev libfontconfig-dev libwlroots-0.19-dev grim
+sudo apt install build-essential pkgconf libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libfreetype-dev libfontconfig-dev libwlroots-0.19-dev grim wl-clipboard wireplumber policykit-1-gnome dbus-bin seatd fonts-dejavu
 ```
 
 На старых Debian/Ubuntu пакет `libfreetype-dev` называется `libfreetype6-dev`.
@@ -45,17 +45,41 @@ sudo apt install build-essential pkgconf libwayland-dev libwayland-bin wayland-p
 **Arch Linux**
 
 ```bash
-sudo pacman -S --needed base-devel wayland wayland-protocols libxkbcommon freetype2 fontconfig wlroots0.19 grim
+sudo pacman -S --needed base-devel wayland wayland-protocols libxkbcommon freetype2 fontconfig wlroots0.19 grim wl-clipboard wireplumber polkit-gnome dbus seatd ttf-dejavu
 ```
 
 **Fedora**
 
 ```bash
-sudo dnf install gcc make pkgconf-pkg-config wayland-devel wayland-protocols-devel libxkbcommon-devel freetype-devel fontconfig-devel wlroots-devel grim
+sudo dnf install gcc make pkgconf-pkg-config wayland-devel wayland-protocols-devel libxkbcommon-devel freetype-devel fontconfig-devel wlroots-devel grim wl-clipboard wireplumber polkit-gnome dbus seatd dejavu-sans-mono-fonts
 ```
 
 В Fedora проверь, что `wlroots-devel` версии 0.19: `pkg-config --modversion wlroots-0.19`.
 Нужен только терминал — пакет wlroots можно не ставить и собирать командой `make -C term`.
+
+### Необязательные программы (runtime)
+
+Команды установки выше уже ставят все эти программы, кроме приложений из слотов
+(`firefox`, `telegram-desktop`, `mpv`) — их ставь сам или замени на свои.
+Таблица ниже объясняет, зачем что нужно, если захочешь что-то не ставить.
+
+Эти программы не нужны для сборки, но без них часть возможностей композитора не работает.
+Если чего-то нет, Bixis не падает: нужная клавиша или автозапуск просто ничего не делают.
+
+| Программа | Пакет (Debian/Ubuntu · Arch · Fedora) | Для чего | Без неё |
+|---|---|---|---|
+| `grim` | `grim` · `grim` · `grim` | снимок экрана по `Print` | скриншоты не делаются |
+| `wl-copy` | `wl-clipboard` · `wl-clipboard` · `wl-clipboard` | копирование снимка в буфер обмена | снимок сохранится в `~/Pictures`, но в буфер не попадёт |
+| `wpctl` (PipeWire) или `pactl` (PulseAudio) | `wireplumber` / `pulseaudio-utils` · `wireplumber` / `libpulse` · `wireplumber` / `pulseaudio-utils` | клавиши громкости `XF86Audio*` | регулировка громкости не работает |
+| polkit-агент | `policykit-1-gnome` · `polkit-gnome` · `polkit-gnome` | окна запроса пароля (монтирование дисков, GParted и т. п.) | программы, требующие прав, не смогут их запросить |
+| `dbus-update-activation-environment` | `dbus-bin` (или `dbus-x11`) · `dbus` · `dbus` | передача `WAYLAND_DISPLAY` в D-Bus и systemd, нужна порталам и части приложений | приложения могут не находить Wayland-сессию |
+| `seatd` или `systemd-logind` | `seatd` · `seatd` · `seatd` | доступ к видеокарте и устройствам ввода при запуске из TTY (через libseat) | композитор не запустится из TTY |
+| `firefox`, `telegram-desktop`, `mpv` | одноимённые пакеты | программы из слотов по умолчанию (`mod+2`, `mod+3`, `mod+4`) | слот не запустится; замени команды в `[slot ...]` на свои |
+| моноширинный шрифт | например `fonts-dejavu` · `ttf-dejavu` · `dejavu-sans-mono-fonts` | текст в `bixis-term` | терминал будет использовать то, что подберёт fontconfig |
+
+Путь к polkit-агенту в `autostart` по умолчанию — `/usr/lib/policykit-1-gnome/polkit-gnome-authentication-agent-1`
+(Debian/Ubuntu). В Arch и Fedora он другой, обычно `/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1`
+(проверь командой `pacman -Ql polkit-gnome` или `rpm -ql polkit-gnome`) — поправь строку `autostart` в конфиге.
 
 ## 3. Сборка и установка
 
@@ -171,7 +195,7 @@ bixis-term --version
 | `Ctrl+0` | Размер по умолчанию |
 
 В Bixis клавиша `Print Screen` сохраняет снимок экрана в `~/Pictures`.
-Для этого нужна программа `grim`.
+Для этого нужна программа `grim`; для копирования в буфер обмена — `wl-clipboard`.
 
 ## 6. Мышь и буфер обмена
 
