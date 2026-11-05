@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Bixis
+Comment=Minimal Wayland shell: terminal, browser, messenger and video on hotkeys
+Exec=bixis
+Type=Application
+DesktopNames=bixis

@@ -4,7 +4,17 @@
 и три приложения по горячим клавишам: браузер, мессенджер, видеоплеер.
 Без панелей, анимаций и эффектов: только то, что нужно, и как можно быстрее.
 
-Сейчас готов терминал **`bixis-term`** (v0.1), композитор `bixis` в планах.
+Готовы композитор **`bixis`** (v0.1) и терминал **`bixis-term`** (v0.1).
+4K поддерживается из коробки: масштаб 200% выставляется сам, текст рисуется в полном разрешении.
+
+## bixis
+
+- На экране всегда одно приложение во весь экран, без панелей и рамок
+- `Super+1…4` — терминал, браузер, мессенджер, видео: показать или запустить
+- Конфиг `~/.config/bixis/config` (INI): слоты, бинды, раскладки, масштаб, режим монитора;
+  перечитывается на лету
+- 4K: масштаб 200% и 60 Гц выбираются автоматически
+- wlroots 0.19, около 64 КБ бинарник; запуск из консоли, с экрана входа или в окне
 
 ## bixis-term
 
@@ -20,18 +30,29 @@
 Ubuntu / Debian:
 
 ```bash
-sudo apt install build-essential pkgconf libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libfreetype-dev libfontconfig-dev
+sudo apt install build-essential pkgconf libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libfreetype-dev libfontconfig-dev libwlroots-0.19-dev
 ```
 
 ```bash
 make && sudo make install
 ```
 
+Выбери сессию **Bixis** на экране входа или запусти `bixis` из текстовой консоли.
+Попробовать в окне внутри текущей сессии:
+
+```bash
+./compositor/build/bixis
+```
+
+Терминал отдельно, в любом Wayland:
+
 ```bash
 bixis-term
 ```
 
-Главные клавиши: `Ctrl+Shift+T` — новая вкладка, `Ctrl+Tab` — следующая,
+Клавиши `bixis`: `Super+1…4` — слоты, `Super+Q` — закрыть окно, `Super+Shift+R` — перечитать
+конфиг, `Super+Shift+E` — выход.
+Клавиши `bixis-term`: `Ctrl+Shift+T` — новая вкладка, `Ctrl+Tab` — следующая,
 `Ctrl+Shift+C` / `Ctrl+Shift+V` — копировать / вставить, `Shift+PgUp` — история.
 
 ## Документация

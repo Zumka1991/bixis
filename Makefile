@@ -1,4 +1,4 @@
-SUBDIRS = term
+SUBDIRS = term compositor
 
 all install uninstall clean:
 	@for d in $(SUBDIRS); do $(MAKE) -C $$d $@ || exit 1; done

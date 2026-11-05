@@ -1,7 +1,10 @@
 # Bixis — руководство
 
-Bixis — минималистичная Wayland-оболочка. Сейчас в ней готов первый
-компонент — терминал `bixis-term`. Композитор `bixis` в планах (см. [ROADMAP](../ROADMAP.md)).
+Bixis — минималистичная Wayland-оболочка из двух компонентов:
+
+- **`bixis`** — композитор: на экране всегда одно приложение во весь экран,
+  переключение горячими клавишами (терминал, браузер, мессенджер, видео);
+- **`bixis-term`** — собственный терминал со вкладками. Он работает и в любом другом Wayland-композиторе.
 
 - [1. Требования](#1-требования)
 - [2. Установка зависимостей](#2-установка-зависимостей)
@@ -12,8 +15,9 @@ Bixis — минималистичная Wayland-оболочка. Сейчас 
 - [7. Настройка](#7-настройка)
 - [8. Что поддерживается](#8-что-поддерживается)
 - [9. Решение проблем](#9-решение-проблем)
-- [10. Для разработчиков](#10-для-разработчиков)
-- [11. Удаление](#11-удаление)
+- [10. Композитор bixis](#10-композитор-bixis)
+- [11. Для разработчиков](#11-для-разработчиков)
+- [12. Удаление](#12-удаление)
 
 ---
 
@@ -22,7 +26,8 @@ Bixis — минималистичная Wayland-оболочка. Сейчас 
 - Linux с Wayland-композитором, который поддерживает `xdg-shell`
   (GNOME, KDE, Sway, Hyprland, labwc, river, FeatherDE и другие).
 - Компилятор C11 (gcc или clang), `make`, `pkg-config`.
-- Библиотеки: `wayland-client`, `wayland-protocols`, `xkbcommon`, `freetype2`, `fontconfig`.
+- Библиотеки терминала: `wayland-client`, `wayland-protocols`, `xkbcommon`, `freetype2`, `fontconfig`.
+- Для композитора дополнительно: `wlroots` 0.19 (он тянет за собой libinput, libseat, libdrm, EGL).
 - Хотя бы один моноширинный шрифт (по умолчанию берётся `monospace`).
 
 X11 не поддерживается и не планируется.
@@ -32,7 +37,7 @@ X11 не поддерживается и не планируется.
 **Ubuntu / Debian**
 
 ```bash
-sudo apt install build-essential pkgconf libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libfreetype-dev libfontconfig-dev
+sudo apt install build-essential pkgconf libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libfreetype-dev libfontconfig-dev libwlroots-0.19-dev
 ```
 
 На старых Debian/Ubuntu пакет `libfreetype-dev` называется `libfreetype6-dev`.
@@ -40,14 +45,17 @@ sudo apt install build-essential pkgconf libwayland-dev libwayland-bin wayland-p
 **Arch Linux**
 
 ```bash
-sudo pacman -S --needed base-devel wayland wayland-protocols libxkbcommon freetype2 fontconfig
+sudo pacman -S --needed base-devel wayland wayland-protocols libxkbcommon freetype2 fontconfig wlroots0.19
 ```
 
 **Fedora**
 
 ```bash
-sudo dnf install gcc make pkgconf-pkg-config wayland-devel wayland-protocols-devel libxkbcommon-devel freetype-devel fontconfig-devel
+sudo dnf install gcc make pkgconf-pkg-config wayland-devel wayland-protocols-devel libxkbcommon-devel freetype-devel fontconfig-devel wlroots-devel
 ```
+
+В Fedora проверь, что `wlroots-devel` версии 0.19: `pkg-config --modversion wlroots-0.19`.
+Нужен только терминал — пакет wlroots можно не ставить и собирать командой `make -C term`.
 
 ## 3. Сборка и установка
 
@@ -63,14 +71,15 @@ cd bixis
 make
 ```
 
-Готовый бинарник лежит в `term/build/bixis-term`. Его можно запустить сразу,
-без установки:
+`make` собирает оба компонента: `term/build/bixis-term` и `compositor/build/bixis`.
+Терминал можно запустить сразу, без установки:
 
 ```bash
 ./term/build/bixis-term
 ```
 
-Установка в `/usr/local` (бинарник и ярлык `.desktop` для меню приложений):
+Установка в `/usr/local`: бинарники, ярлык терминала для меню приложений,
+сессия `Bixis` для экрана входа и пример конфига в `share/bixis/bixis.conf`:
 
 ```bash
 sudo make install
@@ -89,6 +98,8 @@ make install DESTDIR=/tmp/pkg PREFIX=/usr
 ```
 
 ## 4. Запуск
+
+Как запустить композитор, описано в [разделе 10](#10-композитор-bixis). Терминал отдельно:
 
 ```bash
 bixis-term
@@ -209,7 +220,9 @@ make && sudo make install
   Когда окно не в фокусе, курсор рисуется контуром.
 - Заголовок окна и вкладки из OSC 0/2, ответы на DA, DSR и запрос цвета фона (OSC 11).
 - Bracketed paste, focus events (`\e[I` / `\e[O`).
-- HiDPI на композиторах с `wl_compositor` v6 (`preferred_buffer_scale`).
+- HiDPI и 4K: масштаб берётся из `preferred_buffer_scale` (`bixis`, Sway, GNOME 46+),
+  а если композитор его не сообщает — из `wl_output.scale` монитора, на котором окно.
+  При масштабе 200% текст рисуется в полном разрешении.
 
 Пока не поддерживается (см. [ROADMAP](../ROADMAP.md)): события мыши для приложений,
 reflow при изменении ширины, комбинируемые символы, цветные эмодзи, OSC 52, primary selection.
@@ -240,11 +253,167 @@ sudo apt install fonts-dejavu-core
 **Программа ругается на неизвестный терминал** — на удалённом сервере нет terminfo для
 `xterm-256color`. Это редкость. Можно выставить `TERM=xterm` для этой сессии.
 
-**Текст размыт на HiDPI-экране** — композитор не сообщает масштаб через
-`preferred_buffer_scale` (`wl_compositor` ниже v6). Поддержка `wl_output.scale`
-и дробного масштаба запланирована.
+**Текст слегка размыт при дробном масштабе (125%, 150%)** — терминал рисует только
+в целом масштабе, а композитор потом уменьшает картинку. При 100% и 200% текст чёткий.
+Поддержка `fractional-scale` запланирована.
 
-## 10. Для разработчиков
+## 10. Композитор bixis
+
+### Идея
+
+На экране всегда одно приложение во весь экран — без панелей, рамок и анимаций.
+Приложения разложены по **слотам**. Горячая клавиша показывает слот, а если его
+приложение ещё не запущено, запускает его. Повторное нажатие просто показывает
+уже открытое окно, второй экземпляр не создаётся.
+
+| Клавиши (по умолчанию) | Действие |
+|---|---|
+| `Super+1` | Терминал (`bixis-term`) |
+| `Super+2` | Браузер (`firefox`) |
+| `Super+3` | Мессенджер (`telegram-desktop`) |
+| `Super+4` | Видео (`mpv --idle --force-window`) |
+| `Super+Tab` | Следующее окно в текущем слоте (если их несколько) |
+| `Super+Q` | Закрыть окно в фокусе |
+| `Super+Shift+R` | Перечитать конфиг |
+| `Super+Shift+E` | Выйти из композитора |
+| `Ctrl+Alt+F1…F12` | Переключить виртуальную консоль |
+| `Alt+Shift` | Переключить раскладку (us ↔ ru) |
+
+Бинды работают в любой раскладке: `Super+Q` срабатывает и при русской.
+
+### Запуск
+
+**С экрана входа.** После `sudo make install` в списке сессий GDM, SDDM или
+LightDM появится **Bixis**.
+
+**Из текстовой консоли.** Переключись на свободную консоль (`Ctrl+Alt+F3`), войди и выполни:
+
+```bash
+bixis
+```
+
+Доступ к видеокарте и устройствам ввода даёт libseat: через `systemd-logind`
+это работает без дополнительной настройки.
+
+**В окне внутри текущей сессии** — удобно, чтобы попробовать или отладить конфиг.
+Внешний композитор может перехватывать `Super`, поэтому для пробы удобнее
+модификатор `Alt`. Скопируй конфиг и поменяй в нём `mod = alt`:
+
+```bash
+mkdir -p ~/.config/bixis && cp compositor/bixis.conf ~/.config/bixis/config
+```
+
+```bash
+./compositor/build/bixis
+```
+
+Параметры:
+
+```
+bixis [-c FILE] [-d] [-v]
+  -c FILE  конфиг (по умолчанию ~/.config/bixis/config, иначе встроенный)
+  -d       подробный лог
+  -v       версия
+```
+
+Приложениям выставляются `XDG_CURRENT_DESKTOP=bixis`, `MOZ_ENABLE_WAYLAND=1`,
+`QT_QPA_PLATFORM=wayland`, `ELECTRON_OZONE_PLATFORM_HINT=wayland` и `GDK_BACKEND=wayland`,
+а `DISPLAY` убирается: XWayland нет, все приложения работают нативно.
+
+### Конфиг
+
+Файл `~/.config/bixis/config` (или `$XDG_CONFIG_HOME/bixis/config`). Если его нет,
+используется встроенный, который совпадает с
+[`compositor/bixis.conf`](../compositor/bixis.conf). Удобнее всего начать с копии примера.
+
+```ini
+mod = super          # модификатор для биндов: super, alt, ctrl, shift
+start = terminal     # слот, который открывается при старте (пусто — никакой)
+
+[keyboard]
+layout = us,ru
+variant =
+options = grp:alt_shift_toggle   # любые опции xkb, например caps:escape
+repeat_rate = 35                 # повторов в секунду
+repeat_delay = 250               # мс до начала повтора
+
+[output]
+scale = auto         # auto или число: 1, 1.25, 1.5, 2 …
+mode = auto          # auto или ШИРИНАxВЫСОТА[@ГЦ], например 3840x2160@60
+background = #161616 # цвет пустого слота
+
+[slot browser]
+exec = firefox       # команда через sh -c, можно с переменными: GDK_SCALE=2 firefox
+app_id = firefox     # app_id окна; необязательно, но надёжнее всего
+
+[bindings]
+mod+2 = slot browser
+mod+shift+t = spawn bixis-term
+mod+q = close
+```
+
+**4K и HiDPI.** При `scale = auto` мониторы с шириной от 3840 пикселей (4K и выше)
+и плотные экраны ноутбуков (от 180 DPI) получают масштаб 200%, остальные — 100%.
+При целом масштабе приложения рисуют в полном разрешении: текст в `bixis-term`,
+Firefox, Telegram и mpv остаётся чётким, растягивания нет. Дробный масштаб (`1.5`)
+тоже работает: приложения с поддержкой `fractional-scale` рисуют под него точно,
+остальные — с небольшим сглаживанием.
+
+`mode = auto` берёт родное разрешение монитора с максимальной частотой: некоторые
+4K-мониторы по умолчанию предлагают 30 Гц, а `bixis` выберет 60 Гц. Если нужен
+конкретный режим, задай его явно: `mode = 3840x2160@60`. Выбранный режим и масштаб
+видны в логе `bixis -d` в строке `output ...: 3840x2160@60.00Hz scale 2.00`.
+
+**Слоты.** Секций `[slot ИМЯ]` может быть до 16. Новое окно попадает в слот так:
+
+1. окно-диалог (у него есть родитель) — в слот родителя, по центру поверх;
+2. совпал `app_id` — в этот слот;
+3. окно создал процесс, запущенный слотом, — в этот слот;
+4. слот как раз запускает приложение (последние 15 секунд) — в него.
+   Это нужно для snap и flatpak, где окно создаёт другой процесс;
+5. иначе — в текущий слот.
+
+Узнать `app_id` приложения проще всего из лога: запусти `bixis -d 2>&1 | grep app_id`
+и открой приложение. Для каждого окна будет строка вида `window app_id=... -> slot ...`.
+Типичные значения: `firefox`, `chromium`, `org.telegram.desktop`, `mpv`, `bixis-term`.
+
+**Действия для биндов:**
+
+| Действие | Что делает |
+|---|---|
+| `slot ИМЯ` | Показать слот; если в нём нет окон — запустить его `exec` |
+| `spawn КОМАНДА` | Запустить команду (окно попадёт в текущий слот) |
+| `close` | Попросить окно в фокусе закрыться |
+| `cycle` | Следующее окно в текущем слоте |
+| `reload` | Перечитать конфиг |
+| `exit` | Выйти из композитора |
+
+Клавиша записывается как `модификаторы+клавиша`: `mod+1`, `ctrl+alt+t`, `super+shift+return`,
+`mod+tab`. Имена клавиш — как в xkb (`Return`, `Tab`, `Print`, `F5`, `space`), регистр не важен.
+
+**Перечитывание** — `mod+shift+r` или `pkill -HUP bixis`. Применяются бинды, раскладки,
+автоповтор, режим и масштаб выхода, фон и команды слотов. Новые слоты добавляются; слоты, убранные из конфига,
+остаются до перезапуска, чтобы их окна не потерялись.
+
+Ошибки в конфиге выводятся в stderr с номером строки, плохая строка пропускается.
+
+### Решение проблем
+
+**`can't create a backend`** — `bixis` запущен не из консоли и не внутри Wayland-сессии,
+либо у пользователя нет доступа к устройствам. Проверь, что работает `systemd-logind`
+(или `seatd`) и что запускаешь со свободной текстовой консоли.
+
+**Приложение открылось не в том слоте** — пропиши его `app_id` в секции слота.
+
+**У браузера есть свой заголовок с кнопками** — GTK-приложения (Firefox) не поддерживают
+`xdg-decoration` и рисуют заголовок сами. В Firefox оставь выключенной галочку «Заголовок»
+в «Настроить панель инструментов» (так по умолчанию): тогда кнопки окна уходят в строку вкладок
+и отдельной полосы нет.
+
+**Нет курсора** — не найдена тема курсора. Задай `XCURSOR_THEME`, например `Adwaita`,
+и поставь пакет `adwaita-icon-theme`.
+
+## 11. Для разработчиков
 
 ### Структура
 
@@ -254,6 +423,13 @@ Bixis/
 ├── ROADMAP.md          планы
 ├── CHANGELOG.md        история версий
 ├── docs/MANUAL.md      это руководство
+├── compositor/         bixis
+│   ├── bixis.conf      пример конфига, он же встроенный по умолчанию
+│   ├── bixis.desktop   сессия для экрана входа
+│   ├── Makefile
+│   └── src/
+│       ├── main.c      wlroots: выходы, ввод, слоты, окна, popup'ы, сигналы
+│       └── config.c    разбор INI-конфига
 └── term/               bixis-term
     ├── config.h        настройки (suckless-стиль)
     ├── Makefile
@@ -308,7 +484,7 @@ WAYLAND_DEBUG=1 ./term/build/bixis-term
 - `term.c` не знает про Wayland, `render.c` — про PTY.
 - Каждое изменение для пользователя записывается в [CHANGELOG](../CHANGELOG.md).
 
-## 11. Удаление
+## 12. Удаление
 
 ```bash
 sudo make uninstall

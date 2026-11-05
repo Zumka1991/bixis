@@ -60,6 +60,15 @@ struct offer {
 	int rank;
 };
 
+struct output {
+	struct wl_output *wl;
+	uint32_t name;
+	int scale;
+	bool entered;
+};
+
+#define MAX_OUTPUTS 8
+
 static struct {
 	struct wl_display *dpy;
 	struct wl_compositor *comp;
@@ -80,6 +89,9 @@ static struct {
 	int width, height;          /* logical */
 	int pend_w, pend_h;
 	int scale;
+	bool compositor_scale;      /* got preferred_buffer_scale: ignore wl_output */
+	struct output outputs[MAX_OUTPUTS];
+	int noutputs;
 	bool configured, frame_pending, dirty, focused, running;
 	struct buffer bufs[2];
 
@@ -1063,19 +1075,61 @@ static const struct wl_seat_listener seat_listener = {
 	.name = seat_name,
 };
 
-static void surf_output(void *data, struct wl_surface *s, struct wl_output *o)
+static void apply_scale(int factor)
 {
-	(void)data; (void)s; (void)o;
+	if (factor < 1 || factor == app.scale || !app.surf)
+		return;
+	app.scale = factor;
+	wl_surface_set_buffer_scale(app.surf, factor);
+	set_font(app.font_size);
+}
+
+/* Fallback for compositors without preferred_buffer_scale (wl_compositor < 6):
+ * the highest scale among the outputs the window is on. */
+static void outputs_scale_update(void)
+{
+	int scale = 1;
+	if (app.compositor_scale)
+		return;
+	for (int i = 0; i < app.noutputs; i++)
+		if (app.outputs[i].entered)
+			scale = MAX(scale, app.outputs[i].scale);
+	apply_scale(scale);
+}
+
+static struct output *output_find(struct wl_output *wl)
+{
+	for (int i = 0; i < app.noutputs; i++)
+		if (app.outputs[i].wl == wl)
+			return &app.outputs[i];
+	return NULL;
+}
+
+static void surf_enter(void *data, struct wl_surface *s, struct wl_output *wl)
+{
+	(void)data; (void)s;
+	struct output *o = output_find(wl);
+	if (o) {
+		o->entered = true;
+		outputs_scale_update();
+	}
+}
+
+static void surf_leave(void *data, struct wl_surface *s, struct wl_output *wl)
+{
+	(void)data; (void)s;
+	struct output *o = output_find(wl);
+	if (o) {
+		o->entered = false;
+		outputs_scale_update();
+	}
 }
 
 static void surf_scale(void *data, struct wl_surface *s, int32_t factor)
 {
 	(void)data; (void)s;
-	if (factor < 1 || factor == app.scale)
-		return;
-	app.scale = factor;
-	wl_surface_set_buffer_scale(app.surf, factor);
-	set_font(app.font_size);
+	app.compositor_scale = true;
+	apply_scale(factor);
 }
 
 static void surf_transform(void *data, struct wl_surface *s, uint32_t tr)
@@ -1084,10 +1138,42 @@ static void surf_transform(void *data, struct wl_surface *s, uint32_t tr)
 }
 
 static const struct wl_surface_listener surf_listener = {
-	.enter = surf_output,
-	.leave = surf_output,
+	.enter = surf_enter,
+	.leave = surf_leave,
 	.preferred_buffer_scale = surf_scale,
 	.preferred_buffer_transform = surf_transform,
+};
+
+static void out_geometry(void *data, struct wl_output *o, int32_t x, int32_t y, int32_t pw,
+                         int32_t ph, int32_t sub, const char *make, const char *model, int32_t tr)
+{
+	(void)data; (void)o; (void)x; (void)y; (void)pw; (void)ph;
+	(void)sub; (void)make; (void)model; (void)tr;
+}
+
+static void out_mode(void *data, struct wl_output *o, uint32_t flags, int32_t w, int32_t h,
+                     int32_t refresh)
+{
+	(void)data; (void)o; (void)flags; (void)w; (void)h; (void)refresh;
+}
+
+static void out_done(void *data, struct wl_output *o)
+{
+	(void)data; (void)o;
+	outputs_scale_update();
+}
+
+static void out_scale(void *data, struct wl_output *o, int32_t factor)
+{
+	(void)o;
+	((struct output *)data)->scale = factor;
+}
+
+static const struct wl_output_listener out_listener = {
+	.geometry = out_geometry,
+	.mode = out_mode,
+	.done = out_done,
+	.scale = out_scale,
 };
 
 static void wm_ping(void *data, struct xdg_wm_base *wm, uint32_t serial)
@@ -1164,6 +1250,11 @@ static void reg_global(void *data, struct wl_registry *r, uint32_t name,
 #define IS(x) (!strcmp(iface, x##_interface.name))
 	if (IS(wl_compositor)) {
 		app.comp = wl_registry_bind(r, name, &wl_compositor_interface, MIN(ver, 6));
+	} else if (IS(wl_output) && ver >= 2 && app.noutputs < MAX_OUTPUTS) {
+		struct output *o = &app.outputs[app.noutputs++];
+		*o = (struct output){ .name = name, .scale = 1 };
+		o->wl = wl_registry_bind(r, name, &wl_output_interface, MIN(ver, 3));
+		wl_output_add_listener(o->wl, &out_listener, o);
 	} else if (IS(wl_shm)) {
 		app.shm = wl_registry_bind(r, name, &wl_shm_interface, 1);
 	} else if (IS(xdg_wm_base)) {
@@ -1184,7 +1275,23 @@ static void reg_global(void *data, struct wl_registry *r, uint32_t name,
 
 static void reg_remove(void *data, struct wl_registry *r, uint32_t name)
 {
-	(void)data; (void)r; (void)name;
+	(void)data; (void)r;
+	for (int i = 0; i < app.noutputs; i++) {
+		if (app.outputs[i].name != name)
+			continue;
+		if (wl_output_get_version(app.outputs[i].wl) >= 3)
+			wl_output_release(app.outputs[i].wl);
+		else
+			wl_output_destroy(app.outputs[i].wl);
+		/* listener data points into the array: rebind moved entries */
+		for (int j = i; j < app.noutputs - 1; j++) {
+			app.outputs[j] = app.outputs[j + 1];
+			wl_proxy_set_user_data((struct wl_proxy *)app.outputs[j].wl, &app.outputs[j]);
+		}
+		app.noutputs--;
+		outputs_scale_update();
+		return;
+	}
 }
 
 static const struct wl_registry_listener reg_listener = {
