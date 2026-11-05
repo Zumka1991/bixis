@@ -76,6 +76,9 @@ static bool parse_action(char *val, struct bind *b)
 		{ "slot", ACT_SLOT, true },   { "spawn", ACT_SPAWN, true },
 		{ "close", ACT_CLOSE, false }, { "cycle", ACT_CYCLE, false },
 		{ "reload", ACT_RELOAD, false }, { "exit", ACT_EXIT, false },
+		{ "volume_up", ACT_VOLUME_UP, false },
+		{ "volume_down", ACT_VOLUME_DOWN, false },
+		{ "volume_mute", ACT_VOLUME_MUTE, false },
 	};
 	char *arg = val;
 	while (*arg && !isspace((unsigned char)*arg))
@@ -301,6 +304,23 @@ bool config_load(struct config *c, const char *path)
 	}
 	parse(c, text, path ? path : "<built-in>");
 	free(text);
+
+	/* Older user configs get media keys too; explicit bindings take precedence. */
+	static const struct bind media[] = {
+		{ .sym = XKB_KEY_XF86AudioRaiseVolume, .act = ACT_VOLUME_UP },
+		{ .sym = XKB_KEY_XF86AudioLowerVolume, .act = ACT_VOLUME_DOWN },
+		{ .sym = XKB_KEY_XF86AudioMute, .act = ACT_VOLUME_MUTE },
+	};
+	for (size_t i = 0; i < sizeof media / sizeof *media; i++) {
+		bool found = false;
+		for (int j = 0; j < c->nbinds; j++)
+			if (!c->binds[j].mods && c->binds[j].sym == media[i].sym)
+				found = true;
+		if (!found) {
+			c->binds = realloc(c->binds, (c->nbinds + 1) * sizeof *c->binds);
+			c->binds[c->nbinds++] = media[i];
+		}
+	}
 	return true;
 }
 

@@ -60,6 +60,18 @@ struct offer {
 	int rank;
 };
 
+struct clipboard {
+	char *text;
+	size_t len, refs;
+};
+
+struct transfer {
+	struct transfer *next;
+	struct clipboard *clip;
+	int fd;
+	size_t off;
+};
+
 struct output {
 	struct wl_output *wl;
 	uint32_t name;
@@ -94,6 +106,8 @@ static struct {
 	int noutputs;
 	bool configured, frame_pending, dirty, focused, running;
 	struct buffer bufs[2];
+	struct buffer *presented;
+	struct damage damage;
 
 	struct font *font;
 	double font_size;
@@ -116,10 +130,12 @@ static struct {
 	double px, py;
 	bool selecting, wheel_discrete;
 	double wheel_acc;
+	unsigned mouse_buttons;
 
 	struct wl_data_offer *sel_offer, *dnd_offer;
 	struct wl_data_source *source;
-	char *copy_text;
+	struct clipboard *copy;
+	struct transfer *sends;
 	int paste_fd;
 	struct term *paste_tab;
 	char *paste_buf;
@@ -261,6 +277,8 @@ static void build_tabbar(void)
 
 	int w = CLAMP(cols / app.ntabs, 6, 30);
 	for (int i = 0, x = 0; i < app.ntabs; i++, x += w) {
+		if (i != app.cur)
+			app.tabs[i]->title_changed = false;
 		app.tab_x0[i] = x;
 		app.tab_x1[i] = MIN(x + w, cols);
 		if (x >= cols)
@@ -298,6 +316,8 @@ static void buf_destroy(struct buffer *b)
 		return;
 	wl_buffer_destroy(b->wl);
 	munmap(b->px, b->size);
+	if (app.presented == b)
+		app.presented = NULL;
 	b->wl = NULL;
 	b->snap.valid = false;
 }
@@ -375,19 +395,23 @@ static void redraw(void)
 		.pad = PADDING * app.scale,
 	};
 	struct canvas cv = { b->px, W, H };
-	int y0, y1;
-	render(&cv, &b->snap, app.font, &theme, &fr, &y0, &y1);
+	render(&cv, &b->snap, app.font, &theme, &fr,
+	       app.presented ? &app.presented->snap : NULL, &app.damage);
 	if (cur()->title_changed)
 		update_title();
-	if (y1 <= y0)
+	if (!app.damage.len)
 		return;
 
 	wl_surface_attach(app.surf, b->wl, 0, 0);
-	wl_surface_damage_buffer(app.surf, 0, y0, W, y1 - y0);
+	for (int i = 0; i < app.damage.len; i++) {
+		const struct damage_rect *r = &app.damage.rects[i];
+		wl_surface_damage_buffer(app.surf, r->x, r->y, r->w, r->h);
+	}
 	wl_callback_add_listener(wl_surface_frame(app.surf), &frame_listener, NULL);
 	wl_surface_commit(app.surf);
 	b->busy = true;
 	app.frame_pending = true;
+	app.presented = b;
 }
 
 /* ---- clipboard ---- */
@@ -476,23 +500,74 @@ static void src_target(void *data, struct wl_data_source *s, const char *mime)
 	(void)data; (void)s; (void)mime;
 }
 
+static void clipboard_unref(struct clipboard *clip)
+{
+	if (clip && !--clip->refs) {
+		free(clip->text);
+		free(clip);
+	}
+}
+
+static void transfer_free(struct transfer *tr)
+{
+	close(tr->fd);
+	clipboard_unref(tr->clip);
+	free(tr);
+}
+
+/* A slow receiver gets at most 256 KiB per turn, without blocking input. */
+static bool transfer_write(struct transfer *tr)
+{
+	size_t budget = 256 * 1024;
+	while (tr->off < tr->clip->len && budget) {
+		ssize_t n = write(tr->fd, tr->clip->text + tr->off,
+		                  MIN(tr->clip->len - tr->off, budget));
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+			return false;
+		if (n <= 0)
+			return true;
+		tr->off += n;
+		budget -= n;
+	}
+	return tr->off == tr->clip->len;
+}
+
+static void transfers_ready(const struct pollfd *pfd)
+{
+	for (struct transfer **p = &app.sends; *p; pfd++) {
+		struct transfer *tr = *p;
+		short ev = pfd->revents;
+		if ((ev & (POLLERR | POLLHUP | POLLNVAL)) ||
+		    ((ev & POLLOUT) && transfer_write(tr))) {
+			*p = tr->next;
+			transfer_free(tr);
+		} else {
+			p = &tr->next;
+		}
+	}
+}
+
 static void src_send(void *data, struct wl_data_source *s, const char *mime, int32_t fd)
 {
 	(void)data; (void)s; (void)mime;
-	const char *p = app.copy_text;
-	size_t left = p ? strlen(p) : 0;
-
-	fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK);
-	while (left) {
-		ssize_t n = write(fd, p, left);
-		if (n < 0 && errno == EINTR)
-			continue;
-		if (n <= 0)
-			break;
-		p += n;
-		left -= n;
+	int flags = fcntl(fd, F_GETFL);
+	if (!app.copy || flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0 ||
+	    fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) {
+		close(fd);
+		return;
 	}
-	close(fd);
+	struct transfer *tr = xcalloc(1, sizeof *tr);
+	tr->fd = fd;
+	tr->clip = app.copy;
+	tr->clip->refs++;
+	if (transfer_write(tr)) {
+		transfer_free(tr);
+	} else {
+		tr->next = app.sends;
+		app.sends = tr;
+	}
 }
 
 static void src_cancelled(void *data, struct wl_data_source *s)
@@ -501,8 +576,8 @@ static void src_cancelled(void *data, struct wl_data_source *s)
 	wl_data_source_destroy(s);
 	if (s == app.source) {
 		app.source = NULL;
-		free(app.copy_text);
-		app.copy_text = NULL;
+		clipboard_unref(app.copy);
+		app.copy = NULL;
 	}
 }
 
@@ -534,8 +609,11 @@ static void copy(void)
 	}
 	if (app.source)
 		wl_data_source_destroy(app.source);
-	free(app.copy_text);
-	app.copy_text = text;
+	clipboard_unref(app.copy);
+	app.copy = xcalloc(1, sizeof *app.copy);
+	app.copy->text = text;
+	app.copy->len = strlen(text);
+	app.copy->refs = 1;
 	app.source = wl_data_device_manager_create_data_source(app.ddm);
 	wl_data_source_add_listener(app.source, &src_listener, NULL);
 	for (size_t i = 0; i < LEN(text_mimes); i++)
@@ -547,8 +625,8 @@ static void paste(void)
 {
 	struct term *t = cur();
 
-	if (app.source && app.copy_text) {
-		term_paste(t, app.copy_text, strlen(app.copy_text));
+	if (app.source && app.copy) {
+		term_paste(t, app.copy->text, app.copy->len);
 		return;
 	}
 	if (!app.sel_offer || app.paste_fd >= 0)
@@ -573,7 +651,7 @@ static void paste_read(void)
 {
 	char buf[4096];
 
-	for (;;) {
+	for (int i = 0; i < 64; i++) {
 		ssize_t n = read(app.paste_fd, buf, sizeof buf);
 		if (n > 0) {
 			if (app.paste_len + n > app.paste_cap) {
@@ -586,20 +664,24 @@ static void paste_read(void)
 		}
 		if (n < 0 && (errno == EAGAIN || errno == EINTR))
 			return;
-		break;
+		close(app.paste_fd);
+		app.paste_fd = -1;
+		if (app.paste_tab && app.paste_len)
+			term_paste(app.paste_tab, app.paste_buf, app.paste_len);
+		app.paste_tab = NULL;
+		free(app.paste_buf);
+		app.paste_buf = NULL;
+		app.paste_len = app.paste_cap = 0;
+		return;
 	}
-	close(app.paste_fd);
-	app.paste_fd = -1;
-	if (app.paste_tab && app.paste_len)
-		term_paste(app.paste_tab, app.paste_buf, app.paste_len);
-	app.paste_tab = NULL;
-	app.paste_len = 0;
 }
 
 /* ---- keyboard ---- */
 
 static unsigned mods(void)
 {
+	if (!app.xkb_state)
+		return 0;
 	static const struct { const char *name; unsigned bit; } map[] = {
 		{ XKB_MOD_NAME_CTRL, CTRL }, { XKB_MOD_NAME_SHIFT, SHIFT },
 		{ XKB_MOD_NAME_ALT, ALT },   { XKB_MOD_NAME_LOGO, SUPER },
@@ -621,7 +703,9 @@ static xkb_keysym_t base_sym(xkb_keycode_t kc)
 		    (syms[0] < 0x100 || syms[0] >= 0xfd00))
 			return xkb_keysym_to_lower(syms[0]);
 	}
-	return xkb_keysym_to_lower(xkb_state_key_get_one_sym(app.xkb_state, kc));
+	xkb_keysym_t sym = xkb_keysym_to_lower(xkb_state_key_get_one_sym(app.xkb_state, kc));
+	/* Shift+Tab maps to ISO_Left_Tab, but bindings use Tab */
+	return sym == XKB_KEY_ISO_Left_Tab ? XKB_KEY_Tab : sym;
 }
 
 static int ctrl_char(xkb_keysym_t s)
@@ -711,22 +795,6 @@ static int encode_key(struct term *t, xkb_keycode_t kc, unsigned m, char *buf, s
 	}
 	memmove(buf, buf + 1, n);
 	return n;
-}
-
-static void scroll_lines(int n)
-{
-	struct term *t = cur();
-
-	if (t->alt_active) {
-		/* less, man, vim without mouse mode: wheel = arrows */
-		const char *seq = n < 0 ? (t->app_cursor ? "\033OA" : "\033[A")
-		                        : (t->app_cursor ? "\033OB" : "\033[B");
-		for (int i = abs(n); i > 0; i--)
-			term_write(t, seq, 3);
-		return;
-	}
-	term_scroll_view(t, -n);
-	app.dirty = true;
 }
 
 static bool action(const struct binding *b)
@@ -916,6 +984,44 @@ static bool cell_at(double sx, double sy, int *col, int *row)
 	return sy * app.scale >= bar;
 }
 
+static bool mouse_reporting(void)
+{
+	return app.ntabs && cur()->mouse_mode != MOUSE_OFF && !cur()->view && !(mods() & SHIFT);
+}
+
+static void mouse_report(int button, int col, int row, enum mouse_event event)
+{
+	unsigned m = mods();
+	unsigned flags = (m & SHIFT ? MOUSE_SHIFT : 0) | (m & ALT ? MOUSE_ALT : 0) |
+	                 (m & CTRL ? MOUSE_CTRL : 0);
+	term_mouse(cur(), button, col, row, flags, event);
+}
+
+static void scroll_lines(int n, bool discrete)
+{
+	struct term *t = cur();
+	int col, row;
+	if (!cell_at(app.px, app.py, &col, &row))
+		return;
+	if (mouse_reporting()) {
+		for (int i = abs(n); i > 0; i--)
+			mouse_report(n < 0 ? 64 : 65, col, row, MOUSE_PRESS);
+		return;
+	}
+	if (discrete)
+		n *= WHEEL_LINES;
+	if (t->alt_active && !(mods() & SHIFT)) {
+		/* less, man, vim without mouse mode: wheel = arrows */
+		const char *seq = n < 0 ? (t->app_cursor ? "\033OA" : "\033[A")
+		                        : (t->app_cursor ? "\033OB" : "\033[B");
+		for (int i = abs(n); i > 0; i--)
+			term_write(t, seq, 3);
+		return;
+	}
+	term_scroll_view(t, -n);
+	app.dirty = true;
+}
+
 static void ptr_enter(void *data, struct wl_pointer *p, uint32_t serial,
                       struct wl_surface *s, wl_fixed_t x, wl_fixed_t y)
 {
@@ -930,19 +1036,34 @@ static void ptr_enter(void *data, struct wl_pointer *p, uint32_t serial,
 static void ptr_leave(void *data, struct wl_pointer *p, uint32_t serial, struct wl_surface *s)
 {
 	(void)data; (void)p; (void)serial; (void)s;
+	app.mouse_buttons = 0;
+	app.selecting = false;
+	app.wheel_acc = 0;
 }
 
 static void ptr_motion(void *data, struct wl_pointer *p, uint32_t time, wl_fixed_t x, wl_fixed_t y)
 {
 	(void)data; (void)p; (void)time;
+	int prev_col, prev_row;
+	bool prev_cell = cell_at(app.px, app.py, &prev_col, &prev_row);
 	app.px = wl_fixed_to_double(x);
 	app.py = wl_fixed_to_double(y);
-	if (!app.selecting || !app.ntabs)
+	if (!app.ntabs)
 		return;
 
 	struct term *t = cur();
 	int col, row;
-	cell_at(app.px, app.py, &col, &row);
+	bool in_cell = cell_at(app.px, app.py, &col, &row);
+	if (!app.selecting && mouse_reporting()) {
+		if (in_cell && (!prev_cell || col != prev_col || row != prev_row)) {
+			int button = app.mouse_buttons & 1 ? 0 : app.mouse_buttons & 2 ? 1 :
+			             app.mouse_buttons & 4 ? 2 : 3;
+			mouse_report(button, col, row, MOUSE_MOVE);
+		}
+		return;
+	}
+	if (!app.selecting)
+		return;
 	int64_t abs = term_view_top(t) + row;
 	if (!t->sel_active && abs == t->sel_a_line && col == t->sel_a_col)
 		return;
@@ -963,13 +1084,29 @@ static void ptr_button(void *data, struct wl_pointer *p, uint32_t serial, uint32
 	if (!app.ntabs)
 		return;
 
+	int col, row;
+	bool in_cell = cell_at(app.px, app.py, &col, &row);
+	int mb = button == BTN_LEFT ? 0 : button == BTN_MIDDLE ? 1 : button == BTN_RIGHT ? 2 : -1;
+	if (mb >= 0) {
+		bool reported = app.mouse_buttons & (1u << mb);
+		if (!down)
+			app.mouse_buttons &= ~(1u << mb);
+		/* Finish a reported drag even if Shift was pressed or the pointer crossed the tab bar. */
+		if ((!down && reported && cur()->mouse_mode != MOUSE_OFF && !cur()->view) ||
+		    (down && in_cell && mouse_reporting() && !app.selecting)) {
+			if (down)
+				app.mouse_buttons |= 1u << mb;
+			mouse_report(mb, col, row, down ? MOUSE_PRESS : MOUSE_RELEASE);
+			return;
+		}
+	}
+
 	if (button == BTN_LEFT) {
 		if (!down) {
 			app.selecting = false;
 			return;
 		}
-		int col, row;
-		if (!cell_at(app.px, app.py, &col, &row)) {
+		if (!in_cell) {
 			int x = (int)floor((app.px * app.scale - PADDING * app.scale) / app.font->cw);
 			for (int i = 0; i < app.ntabs; i++)
 				if (x >= app.tab_x0[i] && x < app.tab_x1[i])
@@ -997,7 +1134,7 @@ static void ptr_axis(void *data, struct wl_pointer *p, uint32_t time, uint32_t a
 	int lines = (int)(app.wheel_acc / 10);
 	if (lines) {
 		app.wheel_acc -= lines * 10;
-		scroll_lines(lines);
+		scroll_lines(lines, false);
 	}
 }
 
@@ -1024,7 +1161,7 @@ static void ptr_axis_discrete(void *data, struct wl_pointer *p, uint32_t axis, i
 	if (axis != WL_POINTER_AXIS_VERTICAL_SCROLL || !app.ntabs)
 		return;
 	app.wheel_discrete = true;
-	scroll_lines(d * WHEEL_LINES);
+	scroll_lines(d, true);
 }
 
 static const struct wl_pointer_listener ptr_listener = {
@@ -1303,21 +1440,35 @@ static const struct wl_registry_listener reg_listener = {
 
 static void run(void)
 {
-	struct pollfd pfd[3 + MAX_TABS];
+	struct pollfd *pfd = NULL;
+	int pfd_cap = 0;
 
 	while (app.running) {
 		if (app.dirty && app.configured && !app.frame_pending && app.ntabs)
 			redraw();
 
-		while (wl_display_prepare_read(app.dpy) != 0)
-			wl_display_dispatch_pending(app.dpy);
-		if (wl_display_flush(app.dpy) < 0 && errno != EAGAIN) {
+		while (wl_display_prepare_read(app.dpy) != 0) {
+			if (wl_display_dispatch_pending(app.dpy) < 0 || !app.running)
+				goto done;
+			if (app.dirty && app.configured && !app.frame_pending && app.ntabs)
+				redraw();
+		}
+		int flushed = wl_display_flush(app.dpy);
+		if (flushed < 0 && errno != EAGAIN) {
 			wl_display_cancel_read(app.dpy);
 			break;
 		}
 
+		int needed = 3 + app.ntabs;
+		for (struct transfer *tr = app.sends; tr; tr = tr->next)
+			needed++;
+		if (needed > pfd_cap) {
+			pfd_cap = MAX(needed, pfd_cap * 2);
+			pfd = xrealloc(pfd, pfd_cap * sizeof *pfd);
+		}
 		int n = 0;
-		pfd[n++] = (struct pollfd){ .fd = wl_display_get_fd(app.dpy), .events = POLLIN };
+		pfd[n++] = (struct pollfd){ .fd = wl_display_get_fd(app.dpy),
+		                          .events = POLLIN | (flushed < 0 ? POLLOUT : 0) };
 		pfd[n++] = (struct pollfd){ .fd = app.repeat_fd, .events = POLLIN };
 		pfd[n++] = (struct pollfd){ .fd = app.paste_fd, .events = POLLIN };
 		for (int i = 0; i < app.ntabs; i++)
@@ -1325,6 +1476,9 @@ static void run(void)
 				.fd = app.tabs[i]->fd,
 				.events = POLLIN | (app.tabs[i]->wq_len ? POLLOUT : 0),
 			};
+		int send_start = n;
+		for (struct transfer *tr = app.sends; tr; tr = tr->next)
+			pfd[n++] = (struct pollfd){ .fd = tr->fd, .events = POLLOUT };
 
 		if (poll(pfd, n, -1) < 0) {
 			wl_display_cancel_read(app.dpy);
@@ -1340,6 +1494,7 @@ static void run(void)
 		}
 		if (pfd[0].revents & (POLLERR | POLLHUP))
 			break;
+		transfers_ready(pfd + send_start);
 
 		/* ptys before dispatching Wayland events: those may add or close tabs */
 		for (int i = 0; i < app.ntabs; i++) {
@@ -1368,6 +1523,8 @@ static void run(void)
 		if (wl_display_dispatch_pending(app.dpy) < 0)
 			break;
 	}
+done:
+	free(pfd);
 }
 
 int main(int argc, char **argv)
@@ -1428,6 +1585,22 @@ int main(int argc, char **argv)
 
 	while (app.ntabs)
 		term_free(app.tabs[--app.ntabs]);
+	while (app.sends) {
+		struct transfer *tr = app.sends;
+		app.sends = tr->next;
+		transfer_free(tr);
+	}
+	clipboard_unref(app.copy);
+	if (app.paste_fd >= 0)
+		close(app.paste_fd);
+	free(app.paste_buf);
+	for (int i = 0; i < 2; i++) {
+		buf_destroy(&app.bufs[i]);
+		free(app.bufs[i].snap.cells);
+	}
+	free(app.damage.rects);
+	free(app.tabbar);
+	font_close(app.font);
 	wl_display_disconnect(app.dpy);
 	return 0;
 }

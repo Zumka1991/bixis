@@ -14,6 +14,9 @@ enum action {
 	ACT_CYCLE,
 	ACT_RELOAD,
 	ACT_EXIT,
+	ACT_VOLUME_UP,
+	ACT_VOLUME_DOWN,
+	ACT_VOLUME_MUTE,
 };
 
 struct slot_cfg {

@@ -42,14 +42,27 @@ build/%-protocol.c: $$(xml_%) | build
 build:
 	mkdir -p build
 
-check: | build
+check: $(PROTO_O) $(PROTO_H) | build
 	$(CC) $(CFLAGS) -g -O1 -fsanitize=address,undefined -Isrc -o build/test-vt \
 		tests/vt.c src/term.c -lutil
 	./build/test-vt
+	$(CC) $(CFLAGS) -g -O1 -fsanitize=address,undefined -Isrc -o build/test-input \
+		tests/input.c src/term.c src/font.c src/render.c $(PROTO_O) $(LDLIBS)
+	./build/test-input
+	$(CC) $(CFLAGS) -g -O1 -fsanitize=address,undefined -Isrc -o build/test-render \
+		tests/render.c src/term.c src/render.c -lutil
+	./build/test-render
+	$(CC) $(CFLAGS) -g -O1 -fsanitize=address,undefined -Isrc -o build/test-io \
+		tests/io.c src/term.c src/font.c src/render.c $(PROTO_O) $(LDLIBS)
+	./build/test-io
 
 install: build/bixis-term
 	install -Dm755 build/bixis-term $(DESTDIR)$(PREFIX)/bin/bixis-term
 	install -Dm644 bixis-term.desktop $(DESTDIR)$(PREFIX)/share/applications/bixis-term.desktop
+
+bench: | build
+	$(CC) $(CFLAGS) -Isrc -o build/bench tests/bench.c src/font.c src/render.c $(LDLIBS)
+	./build/bench
 
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/bixis-term
@@ -58,4 +71,4 @@ uninstall:
 clean:
 	rm -rf build
 
-.PHONY: all check install uninstall clean
+.PHONY: all check bench install uninstall clean

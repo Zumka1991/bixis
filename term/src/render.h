@@ -23,7 +23,18 @@ struct canvas {
 struct snapshot {
 	struct cell *cells;
 	int cols, rows;
+	int w, h, cw, ch, pad;
 	bool valid;
+	bool bar;   /* tab bar state this snapshot was built for */
+};
+
+struct damage_rect {
+	int x, y, w, h;
+};
+
+struct damage {
+	struct damage_rect *rects;
+	int len, cap;
 };
 
 struct frame {
@@ -33,8 +44,10 @@ struct frame {
 	int pad;                    /* pixels */
 };
 
-/* Draws what changed; returns the damaged pixel rows [*y0, *y1). */
+/* Repaint relative to this buffer, but damage relative to the last commit.
+ * presented may be snap itself; NULL means no frame has been submitted yet. */
 void render(struct canvas *cv, struct snapshot *snap, struct font *font,
-            const struct theme *th, const struct frame *fr, int *y0, int *y1);
+            const struct theme *th, const struct frame *fr,
+            const struct snapshot *presented, struct damage *damage);
 
 #endif

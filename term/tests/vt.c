@@ -171,6 +171,26 @@ static void test_edit(void)
 	term_free(t);
 }
 
+static void test_mouse_modes(void)
+{
+	struct term *t = mk(20, 5);
+	struct term *other = mk(20, 5);
+	CHECK(t->mouse_mode == MOUSE_OFF && !t->mouse_sgr);
+	feed(t, "\033[?1000;1006h");
+	CHECK(t->mouse_mode == MOUSE_BUTTON && t->mouse_sgr);
+	CHECK(other->mouse_mode == MOUSE_OFF && !other->mouse_sgr);
+	feed(t, "\033[?1002h");
+	CHECK(t->mouse_mode == MOUSE_DRAG);
+	feed(t, "\033[?1003h");
+	CHECK(t->mouse_mode == MOUSE_MOTION);
+	feed(t, "\033[?1003;1006l");
+	CHECK(t->mouse_mode == MOUSE_OFF && !t->mouse_sgr);
+	feed(t, "\033[?1002;1006h\033c");
+	CHECK(t->mouse_mode == MOUSE_OFF && !t->mouse_sgr);
+	term_free(other);
+	term_free(t);
+}
+
 static void test_sgr(void)
 {
 	struct term *t = mk(10, 2);
@@ -237,6 +257,7 @@ int main(void)
 	test_scroll_region();
 	test_scrollback();
 	test_alt_screen();
+	test_mouse_modes();
 	test_edit();
 	test_sgr();
 	test_resize();

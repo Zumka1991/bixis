@@ -416,6 +416,8 @@ static void full_reset(struct term *t)
 	switch_screen(t, false);
 	soft_reset(t);
 	t->bracketed_paste = t->focus_events = false;
+	t->mouse_mode = MOUSE_OFF;
+	t->mouse_sgr = false;
 	t->cursor_shape = CURSOR_BLOCK;
 	t->cx = t->cy = 0;
 	reset_tabs(t);
@@ -504,22 +506,40 @@ void term_write(struct term *t, const char *buf, size_t n)
 		if (!n)
 			return;
 	}
-	if (t->wq_len + n > t->wq_cap) {
-		t->wq_cap = MAX(t->wq_cap * 2, t->wq_len + n);
-		t->wq = xrealloc(t->wq, t->wq_cap);
+	if (t->wq_off + t->wq_len + n > t->wq_cap) {
+		/* Compact only when appending needs the space, never on each write. */
+		if (t->wq_off) {
+			memmove(t->wq, t->wq + t->wq_off, t->wq_len);
+			t->wq_off = 0;
+		}
+		if (t->wq_len + n > t->wq_cap) {
+			t->wq_cap = MAX(t->wq_cap * 2, t->wq_len + n);
+			t->wq = xrealloc(t->wq, t->wq_cap);
+		}
 	}
-	memcpy(t->wq + t->wq_len, buf, n);
+	memcpy(t->wq + t->wq_off + t->wq_len, buf, n);
 	t->wq_len += n;
 }
 
 void term_flush(struct term *t)
 {
-	while (t->wq_len) {
-		ssize_t w = write(t->fd, t->wq, t->wq_len);
+	size_t budget = 256 * 1024;
+	while (t->wq_len && budget) {
+		ssize_t w = write(t->fd, t->wq + t->wq_off, MIN(t->wq_len, budget));
 		if (w <= 0)
 			return;
-		memmove(t->wq, t->wq + w, t->wq_len - w);
+		t->wq_off += w;
 		t->wq_len -= w;
+		budget -= w;
+	}
+	if (!t->wq_len) {
+		t->wq_off = 0;
+		/* A large paste must not permanently inflate every tab's allocation. */
+		if (t->wq_cap >= 1024 * 1024) {
+			free(t->wq);
+			t->wq = NULL;
+			t->wq_cap = 0;
+		}
 	}
 }
 
@@ -548,6 +568,41 @@ void term_paste(struct term *t, const char *buf, size_t n)
 	if (t->bracketed_paste)
 		reply(t, "\033[201~");
 	free(s);
+}
+
+bool term_mouse(struct term *t, int button, int col, int row, unsigned mods,
+                enum mouse_event event)
+{
+	if (t->mouse_mode == MOUSE_OFF || t->view ||
+	    col < 0 || col >= t->cols || row < 0 || row >= t->rows)
+		return false;
+	if (event == MOUSE_MOVE &&
+	    (t->mouse_mode == MOUSE_BUTTON || (t->mouse_mode == MOUSE_DRAG && button == 3)))
+		return false;
+	if (event == MOUSE_RELEASE && button >= 64)
+		return false; /* wheels have no release reports */
+
+	int code = button | mods;
+	if (event == MOUSE_MOVE)
+		code |= 32;
+	char buf[64];
+	int n;
+	if (t->mouse_sgr) {
+		n = snprintf(buf, sizeof buf, "\033[<%d;%d;%d%c", code, col + 1, row + 1,
+		             event == MOUSE_RELEASE ? 'm' : 'M');
+	} else {
+		if (col >= 223 || row >= 223)
+			return false; /* legacy encoding cannot represent larger coordinates */
+		if (event == MOUSE_RELEASE)
+			code = 3 | mods;
+		memcpy(buf, "\033[M", 3);
+		buf[3] = code + 32;
+		buf[4] = col + 33;
+		buf[5] = row + 33;
+		n = 6;
+	}
+	term_write(t, buf, n);
+	return true;
 }
 
 /* ---- escape sequences ---- */
@@ -705,6 +760,11 @@ static void set_private_mode(struct term *t, int mode, bool on)
 		}
 		break;
 	case 1004: t->focus_events = on; break;
+	case 1000: case 1002: case 1003:
+		t->mouse_mode = !on ? MOUSE_OFF : mode == 1000 ? MOUSE_BUTTON :
+		                mode == 1002 ? MOUSE_DRAG : MOUSE_MOTION;
+		break;
+	case 1006: t->mouse_sgr = on; break;
 	case 2004: t->bracketed_paste = on; break;
 	}
 }
@@ -872,6 +932,8 @@ static void osc_dispatch(struct term *t)
 		size_t n = MIN(strlen(arg), sizeof t->title - 1);
 		while (n && n < strlen(arg) && ((uint8_t)arg[n] & 0xc0) == 0x80)
 			n--; /* don't cut a UTF-8 sequence */
+		if (strlen(t->title) == n && !memcmp(t->title, arg, n))
+			return;
 		memcpy(t->title, arg, n);
 		t->title[n] = 0;
 		t->title_changed = true;

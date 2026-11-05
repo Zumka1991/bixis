@@ -36,6 +36,10 @@ build/default_config.h: bixis.conf | build
 build:
 	mkdir -p build
 
+check: $(GEN) | build
+	$(CC) $(CFLAGS) -g -o build/test-volume tests/volume.c src/config.c $(LDLIBS)
+	./build/test-volume
+
 install: build/bixis
 	install -Dm755 build/bixis $(DESTDIR)$(PREFIX)/bin/bixis
 	install -Dm644 bixis.conf $(DESTDIR)$(PREFIX)/share/bixis/bixis.conf
@@ -49,4 +53,4 @@ uninstall:
 clean:
 	rm -rf build
 
-.PHONY: all install uninstall clean
+.PHONY: all check install uninstall clean

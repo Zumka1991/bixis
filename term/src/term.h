@@ -23,6 +23,10 @@ enum {
 
 enum cursor_shape { CURSOR_BLOCK, CURSOR_UNDERLINE, CURSOR_BAR };
 
+enum mouse_mode { MOUSE_OFF, MOUSE_BUTTON, MOUSE_DRAG, MOUSE_MOTION };
+enum mouse_event { MOUSE_PRESS, MOUSE_RELEASE, MOUSE_MOVE };
+enum { MOUSE_SHIFT = 4, MOUSE_ALT = 8, MOUSE_CTRL = 16 };
+
 struct cell {
 	uint32_t cp;      /* 0 = empty */
 	uint32_t fg, bg;  /* 0xRRGGBB */
@@ -66,6 +70,8 @@ struct term {
 	bool autowrap, origin, insert;
 	bool cursor_visible, app_cursor, app_keypad;
 	bool bracketed_paste, focus_events;
+	enum mouse_mode mouse_mode;
+	bool mouse_sgr;
 	enum cursor_shape cursor_shape;
 
 	/* parser */
@@ -97,7 +103,7 @@ struct term {
 	int fd;
 	pid_t pid;
 	char *wq;
-	size_t wq_len, wq_cap;
+	size_t wq_off, wq_len, wq_cap;
 	bool dead;
 
 	char title[128];
@@ -117,6 +123,9 @@ bool term_read(struct term *t);
 void term_write(struct term *t, const char *buf, size_t n);
 void term_flush(struct term *t);
 void term_paste(struct term *t, const char *buf, size_t n);
+/* Zero-based cell coordinates; buttons 0..2, 3 = none, 64/65 = wheel up/down. */
+bool term_mouse(struct term *t, int button, int col, int row, unsigned mods,
+                enum mouse_event event);
 
 void term_scroll_view(struct term *t, int delta);
 

@@ -3,6 +3,7 @@
  * A hotkey shows a slot and launches its app if it isn't running.
  */
 #include <ctype.h>
+#include <errno.h>
 #include <getopt.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -109,6 +110,9 @@ struct keyboard {
 	bool is_virtual;
 	uint32_t consumed[16];  /* pressed keys taken by bindings */
 	int nconsumed;
+	struct wl_event_source *repeat_timer;
+	uint32_t repeat_key;
+	enum action repeat_action;
 	struct wl_listener modifiers, key, destroy;
 };
 
@@ -218,6 +222,14 @@ static char *exec_line(const char *cmd)
 	return line;
 }
 
+static void child_setup(void)
+{
+	sigset_t set;
+	sigemptyset(&set);
+	sigprocmask(SIG_SETMASK, &set, NULL); /* the event loop blocks signals */
+	setsid();
+}
+
 static pid_t spawn(const char *cmd)
 {
 	char *line = exec_line(cmd);
@@ -226,10 +238,7 @@ static pid_t spawn(const char *cmd)
 
 	pid_t pid = fork();
 	if (pid == 0) {
-		sigset_t set;
-		sigemptyset(&set);
-		sigprocmask(SIG_SETMASK, &set, NULL); /* the event loop blocks signals */
-		setsid();
+		child_setup();
 		execl("/bin/sh", "sh", "-c", line, (char *)NULL);
 		_exit(127);
 	}
@@ -237,6 +246,33 @@ static pid_t spawn(const char *cmd)
 	if (pid < 0)
 		wlr_log_errno(WLR_ERROR, "fork");
 	return pid;
+}
+
+/* Audio helpers run outside the event loop and never claim an application slot. */
+static void volume_control(enum action act)
+{
+	pid_t pid = fork();
+	if (pid < 0) {
+		wlr_log_errno(WLR_ERROR, "fork audio helper");
+		return;
+	}
+	if (pid != 0)
+		return;
+	child_setup();
+	if (act == ACT_VOLUME_MUTE)
+		execlp("wpctl", "wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle", (char *)NULL);
+	else
+		execlp("wpctl", "wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@",
+		       act == ACT_VOLUME_UP ? "5%+" : "5%-", (char *)NULL);
+	if (errno == ENOENT) {
+		if (act == ACT_VOLUME_MUTE)
+			execlp("pactl", "pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle", (char *)NULL);
+		else
+			execlp("pactl", "pactl", "set-sink-volume", "@DEFAULT_SINK@",
+			       act == ACT_VOLUME_UP ? "+5%" : "-5%", (char *)NULL);
+	}
+	perror("bixis: audio helper (install wpctl or pactl)");
+	_exit(127);
 }
 
 /* ---- layout ---- */
@@ -462,10 +498,44 @@ static void run_action(struct server *s, const struct bind *b)
 	case ACT_EXIT:
 		wl_display_terminate(s->display);
 		break;
+	case ACT_VOLUME_UP: case ACT_VOLUME_DOWN: case ACT_VOLUME_MUTE:
+		volume_control(b->act);
+		break;
 	}
 }
 
 /* ---- keyboard ---- */
+
+static void repeat_stop(struct keyboard *k)
+{
+	if (k->repeat_timer)
+		wl_event_source_timer_update(k->repeat_timer, 0);
+}
+
+static int volume_repeat(void *data)
+{
+	struct keyboard *k = data;
+	int rate = k->server->cfg.repeat_rate;
+	if (rate > 0) {
+		volume_control(k->repeat_action);
+		wl_event_source_timer_update(k->repeat_timer, rate < 1000 ? 1000 / rate : 1);
+	}
+	return 0;
+}
+
+static void repeat_start(struct keyboard *k, enum action act, uint32_t key)
+{
+	if ((act != ACT_VOLUME_UP && act != ACT_VOLUME_DOWN) || k->server->cfg.repeat_rate <= 0)
+		return;
+	if (!k->repeat_timer)
+		k->repeat_timer = wl_event_loop_add_timer(k->server->loop, volume_repeat, k);
+	if (!k->repeat_timer)
+		return;
+	k->repeat_key = key;
+	k->repeat_action = act;
+	int delay = k->server->cfg.repeat_delay;
+	wl_event_source_timer_update(k->repeat_timer, delay > 0 ? delay : 1);
+}
 
 /* Unshifted Latin symbol of a key, from the first layout that has one. */
 static xkb_keysym_t base_sym(struct wlr_keyboard *kb, xkb_keycode_t kc)
@@ -477,11 +547,15 @@ static xkb_keysym_t base_sym(struct wlr_keyboard *kb, xkb_keycode_t kc)
 		    (syms[0] < 0x100 || syms[0] >= 0xfd00))
 			return xkb_keysym_to_lower(syms[0]);
 	}
-	return xkb_keysym_to_lower(xkb_state_key_get_one_sym(kb->xkb_state, kc));
+	xkb_keysym_t sym = xkb_keysym_to_lower(xkb_state_key_get_one_sym(kb->xkb_state, kc));
+	/* Shift+Tab maps to ISO_Left_Tab, but bindings use Tab */
+	return sym == XKB_KEY_ISO_Left_Tab ? XKB_KEY_Tab : sym;
 }
 
-static bool handle_binding(struct server *s, struct wlr_keyboard *kb, xkb_keycode_t kc)
+static bool handle_binding(struct keyboard *k, xkb_keycode_t kc)
 {
+	struct server *s = k->server;
+	struct wlr_keyboard *kb = k->wlr;
 	const xkb_keysym_t *syms;
 	int n = xkb_state_key_get_syms(kb->xkb_state, kc, &syms);
 	for (int i = 0; i < n; i++)
@@ -497,6 +571,7 @@ static bool handle_binding(struct server *s, struct wlr_keyboard *kb, xkb_keycod
 		const struct bind *b = &s->cfg.binds[i];
 		if (b->mods == mods && b->sym == sym) {
 			run_action(s, b);
+			repeat_start(k, b->act, kc - 8);
 			return true;
 		}
 	}
@@ -510,12 +585,15 @@ static void kb_key(struct wl_listener *l, void *data)
 	struct wlr_keyboard_key_event *ev = data;
 
 	if (ev->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
-		if (handle_binding(s, k->wlr, ev->keycode + 8)) {
+		repeat_stop(k);
+		if (handle_binding(k, ev->keycode + 8)) {
 			if (k->nconsumed < 16)
 				k->consumed[k->nconsumed++] = ev->keycode;
 			return;
 		}
 	} else {
+		if (ev->keycode == k->repeat_key)
+			repeat_stop(k);
 		for (int i = 0; i < k->nconsumed; i++)
 			if (k->consumed[i] == ev->keycode) {
 				k->consumed[i] = k->consumed[--k->nconsumed];
@@ -530,6 +608,7 @@ static void kb_modifiers(struct wl_listener *l, void *data)
 {
 	(void)data;
 	struct keyboard *k = wl_container_of(l, k, modifiers);
+	repeat_stop(k);
 	wlr_seat_set_keyboard(k->server->seat, k->wlr);
 	wlr_seat_keyboard_notify_modifiers(k->server->seat, &k->wlr->modifiers);
 }
@@ -546,6 +625,8 @@ static void kb_destroy(struct wl_listener *l, void *data)
 {
 	(void)data;
 	struct keyboard *k = wl_container_of(l, k, destroy);
+	if (k->repeat_timer)
+		wl_event_source_remove(k->repeat_timer);
 	wl_list_remove(&k->modifiers.link);
 	wl_list_remove(&k->key.link);
 	wl_list_remove(&k->destroy.link);
@@ -556,6 +637,7 @@ static void kb_destroy(struct wl_listener *l, void *data)
 
 static void kb_apply_config(struct server *s, struct keyboard *k)
 {
+	repeat_stop(k);
 	if (k->is_virtual)
 		return; /* virtual keyboards bring their own keymap */
 
